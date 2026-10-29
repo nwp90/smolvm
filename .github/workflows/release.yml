@@ -177,6 +177,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # build-agent-rootfs.sh builds crane from source; it pins the Go version
+      # itself (GOTOOLCHAIN), so any Go 1.21 or later will do here.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
       - name: Download agent binary
         uses: actions/download-artifact@v8
         with:
