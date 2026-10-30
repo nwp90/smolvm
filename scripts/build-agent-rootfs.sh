@@ -136,8 +136,7 @@ build_crane() {
     fi
     if [[ "$native_go" == "1" ]]; then
         echo "  Building crane with native go (GOTOOLCHAIN=go${GO_VERSION})..."
-        local gopath
-        gopath="$(mktemp -d)"
+        local gopath="$WORK_DIR/gopath"
         GOTOOLCHAIN="go${GO_VERSION}" GOPATH="$gopath" GOMODCACHE="$(go env GOMODCACHE)" GOBIN='' \
             CGO_ENABLED=0 GOOS=linux GOARCH="$CRANE_GOARCH" \
             go install -trimpath -ldflags="-s -w" "$CRANE_PACKAGE"
@@ -146,7 +145,6 @@ build_crane() {
         else
             cp "$gopath/bin/crane" "$out_dir/crane"
         fi
-        chmod -R u+w "$gopath" && rm -rf "$gopath"
     elif command -v smolvm &> /dev/null; then
         echo "  Building crane via smolvm (golang:${GO_VERSION}-alpine)..."
         smolvm machine run --net --mem 2048 -v "$out_dir:/out" --image "golang:${GO_VERSION}-alpine" \
@@ -180,12 +178,15 @@ install_crane() {
     fi
 }
 
-# Remove the directory crane was built or downloaded into, if any.
-cleanup_crane() {
-    if [[ -n "${CRANE_BUILD_DIR:-}" ]]; then
-        rm -rf "$CRANE_BUILD_DIR"
-    fi
+# Remove the work directory. Go makes some of what it writes read-only.
+cleanup() {
+    chmod -R u+w "$WORK_DIR" 2>/dev/null || true
+    rm -rf "$WORK_DIR"
 }
+
+# Temporary files go in a private work directory, removed on any exit.
+WORK_DIR="$(mktemp -d)"
+trap cleanup EXIT
 
 echo "Building agent rootfs..."
 echo "  Alpine: ${ALPINE_VERSION} (${ALPINE_ARCH})"
@@ -194,7 +195,8 @@ echo "  Output: ${OUTPUT_DIR}"
 # Get crane before the output directory is touched, so a crane that cannot be
 # built, downloaded or used stops the build first.
 if [[ -z "$CRANE_BINARY" ]]; then
-    CRANE_BUILD_DIR="$(mktemp -d)"
+    CRANE_BUILD_DIR="$WORK_DIR/crane"
+    mkdir -p "$CRANE_BUILD_DIR"
     if [[ "$CRANE_RELEASE" == "1" ]]; then
         download_crane "$CRANE_BUILD_DIR"
     else
@@ -231,7 +233,6 @@ echo "Extracting Alpine..."
 tar -xzf "$ALPINE_TAR" -C "$OUTPUT_DIR"
 
 install_crane "$CRANE_BINARY"
-cleanup_crane
 
 # Install additional Alpine packages into the rootfs.
 # Strategies:
@@ -264,9 +265,9 @@ install_packages_apk_static() {
         echo "Error: could not find apk-tools-static package at $APK_STATIC_MIRROR"
         exit 1
     fi
-    curl -fsSL -o /tmp/apk-static.apk "${APK_STATIC_MIRROR}/${APK_STATIC_PKG}"
-    mkdir -p /tmp/apk-static
-    tar -xzf /tmp/apk-static.apk -C /tmp/apk-static 2>/dev/null || true
+    curl -fsSL -o "$WORK_DIR/apk-static.apk" "${APK_STATIC_MIRROR}/${APK_STATIC_PKG}"
+    mkdir -p "$WORK_DIR/apk-static"
+    tar -xzf "$WORK_DIR/apk-static.apk" -C "$WORK_DIR/apk-static" 2>/dev/null || true
 
     # Set up apk repositories in the rootfs
     mkdir -p "$OUTPUT_DIR/etc/apk"
@@ -278,7 +279,7 @@ install_packages_apk_static() {
     # are aarch64 ELF binaries that the host kernel can't exec, causing exit
     # code 127. The minirootfs already ships busybox symlinks, and seatd runs
     # as root in the VM so the 'seat' group creation is not required.
-    local -a APK_STATIC_COMMAND=(/tmp/apk-static/sbin/apk.static)
+    local -a APK_STATIC_COMMAND=("$WORK_DIR/apk-static/sbin/apk.static")
     local -a APK_STATIC_OWNERSHIP_ARGS=()
     local -a APK_STATIC_INITDB_ARGS=()
     if [[ "$EUID" != "0" ]]; then
